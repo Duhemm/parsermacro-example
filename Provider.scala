@@ -21,33 +21,81 @@ object Provider {
       val Seq(bof, eof) = "".tokens
       Tokens((bof +: tokens :+ eof): _*)
     }
+
+    def positionsOf(p: Token => Boolean): Seq[Int] =
+      tokens.zipWithIndex collect { case (t, i) if p(t) => i }
+
+    // Just like splitAt, but discards the token at `index`.
+    def cutAt(index: Int): (Tokens, Tokens) = {
+      val (left, right) = tokens.splitAt(index)
+      (left, Tokens(right.tail: _*))
+    }
+
+  }
+
+  def splitExprAndGuard(tokens: Tokens): (Option[Term], Option[Term]) = {
+    try ((Some(tokens.withBoFEoF.parse[Term]), None))
+    catch {
+      case _: Exception =>
+        val positions = tokens positionsOf (_.isInstanceOf[Token.`if`])
+        (positions foldLeft (None: Option[Term], None: Option[Term])) {
+          case ((expr, None), idx) =>
+            val (potExpr, potGuard) = tokens cutAt idx
+            try ((Some(potExpr.withBoFEoF.parse[Term]), Some(potGuard.withBoFEoF.parse[Term])))
+            catch { case _: Exception => (expr, None) }
+
+          case ((expr, guard), _) => (expr, guard)
+        }
+
+    }
   }
 
   def For(gens: Tokens, body: Tokens): Tree = macro {
 
-    def createEnumerators(generators: Seq[(Token.Ident, Term)]): Tree => Tree =
+    def makeName(token: Token) =
+      internal.ast.Pat.Var.Term(internal.ast.Term.Name(token.code)) // There has to be a better way
+
+    def createEnumerators(generators: Seq[(Token.Ident, Option[Term], Term)]): Tree => Tree =
       generators match {
         case Seq() =>
           throw new Exception("No generators?")
 
-        case Seq((id, expr)) =>
-          val name = internal.ast.Pat.Var.Term(internal.ast.Term.Name(id.code)) // There has to be a better way
-          (body: Tree) => s"($expr).map($name => $body)".parse[Term] // Didn't manage to use quasiquotes here
+        case Seq((id, Some(guard), expr)) =>
+          val name = makeName(id)
+          (body: Tree) => s"($expr).filter($name => $guard).map($name => $body)".parse[Term] // Didn't manage to use quasiquotes here
 
-        case Seq((id, expr), rest @ _*) =>
-          val name = internal.ast.Pat.Var.Term(internal.ast.Term.Name(id.code))
+        case Seq((id, None, expr)) =>
+          val name = makeName(id)
+          (body: Tree) => s"($expr).map($name => $body)".parse[Term]
+
+        case Seq((id, Some(guard), expr), rest @ _*) =>
+          val name = makeName(id)
+          (body: Tree) => {
+            val inner = createEnumerators(rest)(body)
+            s"($expr).filter($name => $guard).flatMap($name => $inner)".parse[Term]
+          }
+
+        case Seq((id, None, expr), rest @ _*) =>
+          val name = makeName(id)
           (body: Tree) => {
             val inner = createEnumerators(rest)(body)
             s"($expr).flatMap($name => $inner)".parse[Term]
           }
       }
 
-    def createForeach(generators: Seq[(Token.Ident, Term)]): Tree => Tree =
+    def createForeach(generators: Seq[(Token.Ident, Option[Term], Term)]): Tree => Tree =
       generators match {
         case Seq() =>
           identity
 
-        case Seq((id, expr), rest @ _*) =>
+        case Seq((id, Some(guard), expr), rest @ _*) =>
+          val name = internal.ast.Pat.Var.Term(internal.ast.Term.Name(id.code))
+          (body: Tree) => {
+            val inner = createForeach(rest)(body)
+            s"($expr).filter($name => $guard).foreach($name => $inner)".parse[Term]
+          }
+
+        case Seq((id, None, expr), rest @ _*) =>
           val name = internal.ast.Pat.Var.Term(internal.ast.Term.Name(id.code))
           (body: Tree) => {
             val inner = createForeach(rest)(body)
@@ -64,11 +112,14 @@ object Provider {
     //  ...
     //  error: error while loading Provider, class file './parsermacro/Provider.class' is broken
     //  (class java.lang.RuntimeException/error reading Scala signature of Provider.class: scala.reflect.internal.Types$ClassNoArgsTypeRef cannot be cast to scala.reflect.internal.Symbols$Symbol)
-    val generators: Seq[(Token.Ident, Term)] = {
+    val generators: Seq[(Token.Ident, Option[Term], Term)] = {
       gens.clean splitWith (t => t.code == "\n" || t.code == ";") map {
+
         case (ident: Token.Ident) +: (_: Token.`<-`) +: expr =>
-        //case toks"${ident: Token.Ident}<-..$expr" =>
-          (ident, Tokens(expr: _*).withBoFEoF.parse[Term])
+          splitExprAndGuard(Tokens(expr: _*)) match {
+            case (None, _) => throw new Exception("Could not parse: " + expr)
+            case (Some(expr), guard) => (ident, guard, expr)
+          }
 
         case other =>
           throw new Exception(s"Could not recognize syntax: $other")

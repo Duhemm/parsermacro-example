@@ -21,6 +21,11 @@ object Client extends App {
                     square(y)
                   }
 
+  val guarded =
+    Provider.For#{x <- (1 to 10) if x % 2 == 0
+                  y <- (20 to 30) if y % 3 == 0}#{yield x * y}
+
   println("Squares of even numbers: " + even)
+  println("Even better: " + guarded)
 
 }
