@@ -2,8 +2,6 @@ package parsermacro
 
 object Client extends App {
 
-  import Provider.For
-
   Provider.For#{x <- List(1, 2, 3)
                 y <- (1 to 2 * x)
                 z <- List(y + 1, y + 2, y + 3)}#{
