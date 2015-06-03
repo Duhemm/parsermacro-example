@@ -53,15 +53,16 @@ object Provider {
   def For(gens: Tokens, body: Tokens): Tree = macro {
 
     def makeName(token: Token) =
-      internal.ast.Pat.Var.Term(internal.ast.Term.Name(token.code)) // There has to be a better way
+      token.code.parse[Pat] // Here's the better way :D
 
     def createEnumerators(generators: Seq[(Token.Ident, Option[Term], Term)]): Tree => Tree =
       generators match {
         case Seq() =>
-          throw new Exception("No generators?")
+          abort("No generators")
 
         case Seq((id, Some(guard), expr)) =>
           val name = makeName(id)
+          //(body: Tree) => q"($expr).filter(($name => $guard)).map(($name => $body))"
           (body: Tree) => s"($expr).filter($name => $guard).map($name => $body)".parse[Term] // Didn't manage to use quasiquotes here
 
         case Seq((id, None, expr)) =>
@@ -115,14 +116,15 @@ object Provider {
     val generators: Seq[(Token.Ident, Option[Term], Term)] = {
       gens.clean splitWith (t => t.code == "\n" || t.code == ";") map {
 
+        //case toks"${ident: Token.Ident}<-..$expr" =>
         case (ident: Token.Ident) +: (_: Token.`<-`) +: expr =>
           splitExprAndGuard(Tokens(expr: _*)) match {
-            case (None, _) => throw new Exception("Could not parse: " + expr)
+            case (None, _) => abort(expr.head.position, "Could not parse '${exprs.map(_.code).mkString}'")
             case (Some(expr), guard) => (ident, guard, expr)
           }
 
         case other =>
-          throw new Exception(s"Could not recognize syntax: $other")
+          abort(other.head.position, s"Could not recognize syntax: $other")
       }
     }
 
